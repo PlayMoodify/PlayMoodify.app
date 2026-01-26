@@ -1,5 +1,6 @@
 import requests
-from typing import Optional, Dict
+import csv
+from typing import Optional, Dict, List
 from uuidfromname import get_uuid_from_soundcharts
 
 def get_audio_features_by_uuid(uuid: str) -> Optional[Dict]:
@@ -76,11 +77,104 @@ def get_audio_features_by_song_name(song_name: str, artist_name: Optional[str] =
     return features
 
 
-# Esempio di utilizzo
-if __name__ == "__main__":
-    # Test: ricerca canzone per nome e ottieni feature audio
-    features = get_audio_features_by_song_name("Blinding Lights", "The Weeknd")
-    if features:
-        print(f"Feature audio trovate: {features}")
-    else:
-        print("Feature audio non trovate")
+def process_csv_and_get_audio_features(csv_file_path: str, output_file_path: str = "playlist_tracks_with_features.csv") -> List[Dict]:
+    """
+    Legge un file CSV contenente title, artist e uuid (opzionale),
+    recupera le feature audio per ogni canzone e salva i risultati in un nuovo CSV.
+    
+    Se l'UUID non è disponibile, lo ricerca automaticamente dal titolo e artista.
+    
+    Args:
+        csv_file_path: Percorso del file CSV di input con UUID (o title/artist)
+        output_file_path: Percorso del file CSV di output con le feature audio
+        
+    Returns:
+        Lista di dizionari con title, artist, uuid e feature audio
+    """
+    results = []
+    
+    try:
+        with open(csv_file_path, 'r', encoding='utf-8') as infile:
+            reader = csv.DictReader(infile)
+            
+            for i, row in enumerate(reader, 1):
+                title = row.get('title', '').strip()
+                artist = row.get('artist', '').strip()
+                uuid = row.get('uuid', '').strip() if 'uuid' in row else None
+                
+                if not title:
+                    print(f"Riga {i}: title vuoto, salto")
+                    continue
+                
+                print(f"[{i}] Elaborando: {title} - {artist}")
+                
+                # Se UUID non disponibile, ricerca automaticamente
+                if not uuid or uuid == 'N/A':
+                    print(f"  ↳ UUID non disponibile, ricerca in corso...")
+                    uuid = get_uuid_from_soundcharts(title, artist)
+                
+                result = {
+                    'title': title,
+                    'artist': artist,
+                    'uuid': uuid if uuid else 'N/A'
+                }
+                
+                # Recupera le feature audio
+                if uuid and uuid != 'N/A':
+                    print(f"  ↳ Recupero feature audio (UUID: {uuid})")
+                    features = get_audio_features_by_uuid(uuid)
+                    
+                    if features:
+                        result.update(features)
+                        print(f"  ✓ Feature audio recuperate")
+                    else:
+                        # Se non trovate, aggiungi N/A per tutte le feature
+                        result.update({
+                            'acousticness': 'N/A',
+                            'danceability': 'N/A',
+                            'energy': 'N/A',
+                            'instrumentalness': 'N/A',
+                            'liveness': 'N/A',
+                            'speechiness': 'N/A',
+                            'tempo': 'N/A',
+                            'valence': 'N/A'
+                        })
+                        print(f"  ✗ Feature audio non trovate")
+                else:
+                    # Se UUID non trovato, aggiungi N/A per tutte le feature
+                    result.update({
+                        'acousticness': 'N/A',
+                        'danceability': 'N/A',
+                        'energy': 'N/A',
+                        'instrumentalness': 'N/A',
+                        'liveness': 'N/A',
+                        'speechiness': 'N/A',
+                        'tempo': 'N/A',
+                        'valence': 'N/A'
+                    })
+                    print(f"  ✗ UUID non trovato")
+                
+                results.append(result)
+        
+        # Salva i risultati in un nuovo CSV
+        if results:
+            fieldnames = ['title', 'artist', 'uuid', 'acousticness', 'danceability', 
+                         'energy', 'instrumentalness', 'liveness', 'speechiness', 'tempo', 'valence']
+            
+            with open(output_file_path, 'w', newline='', encoding='utf-8') as outfile:
+                writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(results)
+            
+            print(f"\n✓ Risultati salvati in: {output_file_path}")
+        
+        return results
+        
+    except FileNotFoundError:
+        print(f"✗ Errore: File {csv_file_path} non trovato")
+        return []
+    except Exception as e:
+        print(f"✗ Errore nel processamento del CSV: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
