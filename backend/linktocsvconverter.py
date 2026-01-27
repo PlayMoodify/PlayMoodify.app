@@ -30,10 +30,24 @@ def spotify_playlist_to_csv(playlist_url, output_csv_path):
         writer.writerows(tracks)
 
     print(f"✅ Salvate {len(tracks)} canzoni in {output_csv_path}")
+    return output_csv_path
 
 
 if __name__ == "__main__":
-    playlist_url = "https://open.spotify.com/playlist/53wGR7Cv0bMVhLl2LWMShu"
-    output_csv = "playlist_tracks.csv"
+    import sys
+    
+    if len(sys.argv) < 3:
+        print("Usage: python linktocsvconverter.py <playlist_url> <output_csv>")
+        sys.exit(1)
+    
+    playlist_url = sys.argv[1]
+    output_csv = sys.argv[2]
+    
+    try:
+        spotify_playlist_to_csv(playlist_url, output_csv)
+    except Exception as e:
+        print(f"Errore: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
 
-    spotify_playlist_to_csv(playlist_url, output_csv)

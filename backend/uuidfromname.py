@@ -58,7 +58,7 @@ def get_uuid_from_soundcharts(song_name: str, artist_name: Optional[str] = None)
         return None
 
 
-def process_csv_and_get_uuids(csv_file_path: str, output_file_path: str = "playlist_tracks_with_uuids.csv") -> List[Dict[str, str]]:
+def process_csv_and_get_uuids(csv_file_path: str, output_file_path: str) -> List[Dict[str, str]]:
     """
     Legge un file CSV contenente title e artist, 
     recupera l'UUID per ogni canzone e salva i risultati in un nuovo CSV.
@@ -112,22 +112,21 @@ def process_csv_and_get_uuids(csv_file_path: str, output_file_path: str = "playl
         return []
 
 
-# Esempio di utilizzo
 if __name__ == "__main__":
     import sys
     
-    print("=== UUID Extractor from Playlist ===\n")
+    if len(sys.argv) < 3:
+        print("Usage: python uuidfromname.py <input_csv> <output_csv>")
+        sys.exit(1)
     
-    # Se viene passato un argomento, usalo come file di input
-    if len(sys.argv) > 1:
-        input_file = sys.argv[1]
-        output_file = sys.argv[2] if len(sys.argv) > 2 else "playlist_tracks_with_uuids.csv"
-    else:
-        input_file = "playlist_tracks.csv"
-        output_file = "playlist_tracks_with_uuids.csv"
+    input_csv = sys.argv[1]
+    output_csv = sys.argv[2]
     
-    print(f"File di input: {input_file}")
-    print(f"File di output: {output_file}\n")
-    
-    process_csv_and_get_uuids(input_file, output_file)
-    
+    try:
+        results = process_csv_and_get_uuids(input_csv, output_csv)
+        print(f"Done. Processed {len(results)} tracks")
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
