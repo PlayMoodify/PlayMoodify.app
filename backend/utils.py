@@ -20,3 +20,26 @@ def load_model():
         )
         _model = joblib.load(model_path)
     return _model
+
+# ==============================
+# FILE CLEANUP
+# ==============================
+
+
+# Eliminiamo i file CSV temporanei dopo l'elaborazione.
+def cleanup_csv_files(base_dir: str = None):
+    if base_dir is None:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    csv_files = [
+        os.path.join(base_dir, "playlist_tracks.csv"),
+        os.path.join(base_dir, "playlist_with_uuid.csv"),
+        os.path.join(base_dir, "playlist_with_features.csv")
+    ]
+    
+    for csv_file in csv_files:
+        try:
+            if os.path.exists(csv_file):
+                os.remove(csv_file)
+        except Exception as e:
+            print(f"[CLEANUP] Error deleting {csv_file}: {e}")

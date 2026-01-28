@@ -9,7 +9,8 @@ def spotify_playlist_to_csv(playlist_url, output_csv_path):
     tracks = []
 
     for track in playlist.get("tracks", []):
-        # Skip elementi non musicali o incompleti
+
+        # Skippiamo elementi non musicali o incompleti
         if not track.get("artists") or not track.get("name"):
             continue
 
@@ -21,7 +22,7 @@ def spotify_playlist_to_csv(playlist_url, output_csv_path):
             "artist": artist
         })
 
-    # Scrittura CSV
+    # Salviamo i campi nel CSV
     fieldnames = ["title", "artist"]
 
     with open(output_csv_path, mode="w", newline="", encoding="utf-8") as f:
@@ -29,7 +30,7 @@ def spotify_playlist_to_csv(playlist_url, output_csv_path):
         writer.writeheader()
         writer.writerows(tracks)
 
-    print(f"✅ Salvate {len(tracks)} canzoni in {output_csv_path}")
+    
     return output_csv_path
 
 
