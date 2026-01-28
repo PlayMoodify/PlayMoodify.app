@@ -4,6 +4,12 @@ import pandas as pd
 import numpy as np
 import os
 import requests
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import time
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +28,46 @@ app.add_middleware(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ==============================
+# CLEANUP CSV TEMPORANEI
+# ==============================
+
+def cleanup_csv_files():
+    """Elimina i file CSV temporanei dopo l'elaborazione."""
+    csv_files = [
+        os.path.join(BASE_DIR, "playlist_tracks.csv"),
+        os.path.join(BASE_DIR, "playlist_with_uuid.csv"),
+        os.path.join(BASE_DIR, "playlist_with_features.csv")
+    ]
+    
+    for csv_file in csv_files:
+        try:
+            if os.path.exists(csv_file):
+                os.remove(csv_file)
+                print(f"[CLEANUP] Deleted: {csv_file}")
+        except Exception as e:
+            print(f"[CLEANUP] Error deleting {csv_file}: {e}")
+
+# ==============================
+# SESSION POOLING (Connection reuse)
+# ==============================
+
+def _create_session_with_retry() -> requests.Session:
+    """Crea session con connection pooling e retry automatico."""
+    session = requests.Session()
+    retry = Retry(
+        total=2,
+        backoff_factor=0.3,
+        status_forcelist=(500, 502, 504)
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+# Session globale riutilizzata
+_session = _create_session_with_retry()
 
 # ==============================
 # INPUT API
@@ -57,10 +103,17 @@ MOOD_LABELS = {
 }
 
 MOOD_SEARCH_KEYWORDS = {
-    0: "sad songs",
-    1: "happy uplifting",
-    2: "energetic dance",
-    3: "calm relaxing"
+    0: "sad",
+    1: "happy",
+    2: "energetic",
+    3: "calm"
+}
+
+MOOD_FALLBACK_KEYWORDS = {
+    0: ["melancholy", "blue", "sad songs", "depression", "lonely", "sorrowful", "heartbreak", "blues"],
+    1: ["joy", "uplifting", "feel good", "happy songs", "cheerful", "optimistic", "vibrant", "sunny"],
+    2: ["dance", "party", "electronic", "energetic", "uptempo", "electro", "bass", "workout"],
+    3: ["relaxation", "ambient", "chill", "peaceful", "meditation", "calm", "zen", "mellow"]
 }
 
 # ==============================
@@ -162,18 +215,163 @@ def calculate_moods(csv_with_features: str):
 # LASTFM RECOMMENDATIONS
 # ==============================
 
+# ==============================
+# LASTFM RECOMMENDATIONS (OTTIMIZZATO)
+# ==============================
+
+@lru_cache(maxsize=256)
+def _search_lastfm_track(search_keyword: str, lastfm_api_key: str, limit: int = 5) -> dict:
+    """
+    Cached search su Last.fm con session pooling.
+    """
+    try:
+        url = "https://ws.audioscrobbler.com/2.0/"
+        params = {
+            "method": "track.search",
+            "track": search_keyword,
+            "api_key": lastfm_api_key,
+            "format": "json",
+            "limit": limit
+        }
+        
+        response = _session.get(url, params=params, timeout=2)
+        
+        if response.status_code == 200:
+            data = response.json()
+            tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
+            return {"tracks": tracks if isinstance(tracks, list) else [tracks] if tracks else []}
+        
+        return {"tracks": []}
+        
+    except Exception as e:
+        print(f"[LASTFM] Search error for '{search_keyword}': {str(e)}")
+        return {"tracks": []}
+
+def _fetch_mood_recommendation(mood_id: int, mood_name: str, df: pd.DataFrame, lastfm_api_key: str):
+    """
+    Ricerca raccomandazione per UN mood con session pooling.
+    """
+    mood_tracks = df[df["label"] == mood_id]
+    
+    if len(mood_tracks) > 0:
+        # Canzone simile dalla playlist
+        first_track = mood_tracks.iloc[0]
+        title = first_track.get("title", "")
+        artist = first_track.get("artist", "")
+        
+        try:
+            url = "https://ws.audioscrobbler.com/2.0/"
+            params = {
+                "method": "track.getSimilar",
+                "artist": artist,
+                "track": title,
+                "api_key": lastfm_api_key,
+                "format": "json",
+                "limit": 5
+            }
+            
+            response = _session.get(url, params=params, timeout=2)
+            
+            if response.status_code == 200:
+                data = response.json()
+                similar_tracks = data.get("similartracks", {}).get("track", [])
+                
+                if similar_tracks:
+                    track = similar_tracks[0] if isinstance(similar_tracks, list) else similar_tracks
+                    
+                    return {
+                        f"mood_{mood_id}_{mood_name}": {
+                            "mood_id": mood_id,
+                            "mood_name": mood_name,
+                            "source": "similar_track",
+                            "original_track": f"{title} - {artist}",
+                            "recommended_track": f"{track.get('name', '')} - {track.get('artist', {}).get('name', '')}",
+                            "similarity": float(track.get('match', 0))
+                        }
+                    }
+        except Exception as e:
+            print(f"[LASTFM] Similar search error for mood {mood_id}: {str(e)}")
+    
+    # Fallback: ricerca generica per mood
+    search_keywords = [MOOD_SEARCH_KEYWORDS.get(mood_id, mood_name)]
+    search_keywords.extend(MOOD_FALLBACK_KEYWORDS.get(mood_id, []))
+    random.shuffle(search_keywords)
+    
+    for search_keyword in search_keywords:
+        result = _search_lastfm_track(search_keyword, lastfm_api_key, limit=5)
+        tracks = result.get("tracks", [])
+        
+        if tracks:
+            track = random.choice(tracks)
+            
+            return {
+                f"mood_{mood_id}_{mood_name}": {
+                    "mood_id": mood_id,
+                    "mood_name": mood_name,
+                    "source": "generic_search",
+                    "recommended_track": f"{track.get('name', 'Unknown')} - {track.get('artist', 'Unknown')}",
+                    "listeners": int(track.get('listeners', 0))
+                }
+            }
+    
+    # Fallback: artista casuale
+    fallback_artists = {
+        0: ["Radiohead", "Nick Cave", "Bon Iver", "The National", "Elliott Smith", "Tom Waits"],
+        1: ["Pharrell Williams", "Walk the Moon", "MGMT", "Two Door Cinema Club", "Foster the People", "Phoenix"],
+        2: ["Daft Punk", "The Chemical Brothers", "Fatboy Slim", "Prodigy", "Pendulum", "Deadmau5"],
+        3: ["Bon Iver", "Sigur Rós", "Explosions in the Sky", "Tycho", "Ólafur Arnalds", "Nils Frahm"]
+    }
+    
+    artist_list = fallback_artists.get(mood_id, [])
+    if artist_list:
+        artist = random.choice(artist_list)
+        
+        try:
+            url = "https://ws.audioscrobbler.com/2.0/"
+            params = {
+                "method": "artist.getTopTracks",
+                "artist": artist,
+                "api_key": lastfm_api_key,
+                "format": "json",
+                "limit": 5
+            }
+            
+            response = _session.get(url, params=params, timeout=2)
+            
+            if response.status_code == 200:
+                data = response.json()
+                tracks = data.get("toptracks", {}).get("track", [])
+                
+                if tracks:
+                    track = random.choice(tracks) if isinstance(tracks, list) else tracks
+                    track_artist = track.get('artist', {})
+                    track_artist_name = track_artist.get('name', 'Unknown') if isinstance(track_artist, dict) else track_artist
+                    
+                    return {
+                        f"mood_{mood_id}_{mood_name}": {
+                            "mood_id": mood_id,
+                            "mood_name": mood_name,
+                            "source": "artist_fallback",
+                            "recommended_track": f"{track.get('name', 'Unknown')} - {track_artist_name}",
+                            "listeners": int(track.get('playcount', 0))
+                        }
+                    }
+        except Exception as e:
+            print(f"[LASTFM] Artist fallback error for mood {mood_id}: {str(e)}")
+    
+    # Ultimo fallback
+    return {
+        f"mood_{mood_id}_{mood_name}": {
+            "mood_id": mood_id,
+            "mood_name": mood_name,
+            "source": "error",
+            "error": "Unable to find recommendations"
+        }
+    }
+
 def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481d0ece35e3d695d07d399427f5ef04"):
     """
-    Ricerca 1 canzone per ogni mood usando l'API di Last.fm.
-    - Se il mood è presente nella playlist: canzone simile alla prima del mood
-    - Se il mood non è presente: canzone generica basata su keyword del mood
-    
-    Args:
-        csv_with_features: Percorso del CSV con le feature e i label
-        lastfm_api_key: API key di Last.fm
-    
-    Returns:
-        Dict con canzoni per ogni mood (0-3)
+    Ricerca raccomandazioni in PARALLELO per tutti i 4 mood.
     """
     if not lastfm_api_key:
         lastfm_api_key = os.getenv("LASTFM_API_KEY")
@@ -185,136 +383,27 @@ def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481
     df = pd.read_csv(csv_with_features)
     print(f"[LASTFM] Loaded CSV with {len(df)} rows")
     print(f"[LASTFM] Unique moods: {sorted(df['label'].unique().tolist())}")
+    print(f"[LASTFM] Starting parallel mood recommendations...")
     
     result = {}
+    start_time = time.time()
     
-    # Itera su tutti i 4 mood (0, 1, 2, 3)
-    for mood_id in range(4):
-        mood_name = MOOD_LABELS.get(mood_id, "unknown")
-        mood_tracks = df[df["label"] == mood_id]
+    # Parallelize 4 mood searches con ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(_fetch_mood_recommendation, mood_id, MOOD_LABELS[mood_id], df, lastfm_api_key): mood_id
+            for mood_id in range(4)
+        }
         
-        print(f"[LASTFM] Processing mood {mood_id} ({mood_name}) - {len(mood_tracks)} tracks")
-        
-        if len(mood_tracks) > 0:
-            # Se il mood è presente nella playlist, cercare simile
-            first_track = mood_tracks.iloc[0]
-            title = first_track.get("title", "")
-            artist = first_track.get("artist", "")
-            print(f"[LASTFM]   Found in playlist, looking for similar to: {title} - {artist}")
-            
+        for future in as_completed(futures):
             try:
-                url = "https://ws.audioscrobbler.com/2.0/"
-                params = {
-                    "method": "track.getSimilar",
-                    "artist": artist,
-                    "track": title,
-                    "api_key": lastfm_api_key,
-                    "format": "json",
-                    "limit": 1
-                }
-                
-                response = requests.get(url, params=params, timeout=5)
-                print(f"[LASTFM]   Response status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    similar_tracks = data.get("similartracks", {}).get("track", [])
-                    
-                    if similar_tracks:
-                        if isinstance(similar_tracks, list):
-                            similar = similar_tracks[0]
-                        else:
-                            similar = similar_tracks
-                        
-                        result[f"mood_{mood_id}_{mood_name}"] = {
-                            "mood_id": mood_id,
-                            "mood_name": mood_name,
-                            "source": "similar_track",
-                            "original_track": f"{title} - {artist}",
-                            "recommended_track": f"{similar.get('name', '')} - {similar.get('artist', {}).get('name', '')}",
-                            "similarity": float(similar.get('match', 0))
-                        }
-                    else:
-                        result[f"mood_{mood_id}_{mood_name}"] = {
-                            "mood_id": mood_id,
-                            "mood_name": mood_name,
-                            "source": "similar_track",
-                            "error": "No similar tracks found on Last.fm"
-                        }
-                else:
-                    result[f"mood_{mood_id}_{mood_name}"] = {
-                        "mood_id": mood_id,
-                        "mood_name": mood_name,
-                        "source": "similar_track",
-                        "error": f"Last.fm API error: {response.status_code}"
-                    }
-                    
+                mood_result = future.result()
+                result.update(mood_result)
             except Exception as e:
-                print(f"[LASTFM]   Exception: {str(e)}")
-                result[f"mood_{mood_id}_{mood_name}"] = {
-                    "mood_id": mood_id,
-                    "mood_name": mood_name,
-                    "source": "similar_track",
-                    "error": str(e)
-                }
-        else:
-            # Se il mood non è nella playlist, cercare una canzone generica per quel mood
-            print(f"[LASTFM]   Not found in playlist, searching generic keyword...")
-            search_keyword = MOOD_SEARCH_KEYWORDS.get(mood_id, mood_name)
-            
-            try:
-                url = "https://ws.audioscrobbler.com/2.0/"
-                params = {
-                    "method": "track.search",
-                    "track": search_keyword,
-                    "api_key": lastfm_api_key,
-                    "format": "json",
-                    "limit": 1
-                }
-                
-                response = requests.get(url, params=params, timeout=5)
-                print(f"[LASTFM]   Response status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
-                    
-                    if tracks:
-                        if isinstance(tracks, list):
-                            track = tracks[0]
-                        else:
-                            track = tracks
-                        
-                        result[f"mood_{mood_id}_{mood_name}"] = {
-                            "mood_id": mood_id,
-                            "mood_name": mood_name,
-                            "source": "generic_search",
-                            "recommended_track": f"{track.get('name', '')} - {track.get('artist', '')}",
-                            "listeners": int(track.get('listeners', 0))
-                        }
-                    else:
-                        result[f"mood_{mood_id}_{mood_name}"] = {
-                            "mood_id": mood_id,
-                            "mood_name": mood_name,
-                            "source": "generic_search",
-                            "error": "No tracks found for this mood keyword"
-                        }
-                else:
-                    result[f"mood_{mood_id}_{mood_name}"] = {
-                        "mood_id": mood_id,
-                        "mood_name": mood_name,
-                        "source": "generic_search",
-                        "error": f"Last.fm API error: {response.status_code}"
-                    }
-                    
-            except Exception as e:
-                print(f"[LASTFM]   Exception: {str(e)}")
-                result[f"mood_{mood_id}_{mood_name}"] = {
-                    "mood_id": mood_id,
-                    "mood_name": mood_name,
-                    "source": "generic_search",
-                    "error": str(e)
-                }
+                print(f"[LASTFM] Executor error: {str(e)}")
+    
+    elapsed = time.time() - start_time
+    print(f"[LASTFM] Parallel recommendations completed in {elapsed:.2f}s")
     
     return result
 
@@ -329,18 +418,25 @@ def process_playlist(req: PlaylistRequest):
         df, overall = calculate_moods(final_csv)
         similar_songs = get_similar_songs_by_mood(final_csv)
 
-        return {
+        response_data = {
             "status": "success",
             "playlist_url": req.playlist_url,
             "overall_mood": overall,
             "similar_songs_by_mood": similar_songs,
             "tracks": df.to_dict(orient="records")
         }
+        
+        # Cleanup: Elimina file CSV temporanei
+        cleanup_csv_files()
+        
+        return response_data
 
     except subprocess.CalledProcessError as e:
+        cleanup_csv_files()  # Cleanup anche in caso di errore
         return {"status": "error", "error": f"Errore script: {str(e)}"}
 
     except Exception as e:
+        cleanup_csv_files()  # Cleanup anche in caso di errore
         return {"status": "error", "error": str(e)}
 
 @app.get("/")

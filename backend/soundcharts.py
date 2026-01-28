@@ -3,24 +3,49 @@ import sys
 import pandas as pd
 import csv
 from typing import Optional, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from functools import lru_cache
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 # ==============================
-# API SOUNDCHARTS
+# SESSION POOLING
 # ==============================
 
+def _create_session_with_retry() -> requests.Session:
+    """Crea session con connection pooling."""
+    session = requests.Session()
+    retry = Retry(
+        total=1,
+        backoff_factor=0.2,
+        status_forcelist=(500, 502, 504)
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=15, pool_maxsize=15)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+_session = _create_session_with_retry()
+
+# ==============================
+# API SOUNDCHARTS (con cache)
+# ==============================
+
+@lru_cache(maxsize=512)
 def get_audio_features_by_uuid(uuid: str) -> Optional[Dict]:
     """
-    Recupera le feature audio da SoundCharts API usando l'UUID della canzone.
+    Recupera le feature audio da SoundCharts API (CACHED).
     """
     try:
         url = f"https://customer.api.soundcharts.com/api/v2.25/song/{uuid}"
 
         headers = {
-            'x-app-id': 'APANICO-API_5645D799',
-            'x-api-key': '0428d41225b3c115',
+            'x-app-id': 'APANICO-API1_D6B65B3F',
+            'x-api-key': '47408a8357d3837a',
         }
 
-        response = requests.get(url, headers=headers)
+        response = _session.get(url, headers=headers, timeout=2)
 
         if response.status_code != 200:
             print(f"Errore SoundCharts [{uuid}]: {response.status_code}")
@@ -49,50 +74,69 @@ def get_audio_features_by_uuid(uuid: str) -> Optional[Dict]:
         return None
 
 # ==============================
-# CSV PROCESSOR (UUID ONLY)
+# CSV PROCESSOR (UUID ONLY) - PARALLELIZZATO
 # ==============================
+
+def _process_single_uuid(row: Dict, index: int) -> Optional[Dict]:
+    """Worker function per processare UN UUID in parallelo."""
+    title = row.get('title', '').strip()
+    artist = row.get('artist', '').strip()
+    uuid = row.get('uuid', '').strip()
+    
+    if not uuid or uuid == 'N/A':
+        print(f"[{index}] SKIP (UUID mancante): {title} - {artist}")
+        return None
+    
+    print(f"[{index}] Elaborando UUID {uuid} → {title} - {artist}")
+    
+    features = get_audio_features_by_uuid(uuid)
+    
+    if not features:
+        print(f"  ✗ Feature non trovate, skip")
+        return None
+    
+    result = {
+        "title": title,
+        "artist": artist,
+        "uuid": uuid,
+        **features
+    }
+    print(f"  ✓ Feature aggiunte")
+    return result
 
 def process_csv_and_get_audio_features(csv_file_path: str, output_file_path: str) -> List[Dict]:
     """
     Legge CSV con UUID.
-    Se UUID presente → aggiunge audio features.
+    Se UUID presente → aggiunge audio features (PARALLELO).
     Se UUID mancante → SKIP.
     
     IMPORTANTE: Crea sempre il CSV di output, anche se vuoto.
     """
-
     results = []
-
+    rows = []
+    
     with open(csv_file_path, 'r', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
-
-        for i, row in enumerate(reader, 1):
-            title = row.get('title', '').strip()
-            artist = row.get('artist', '').strip()
-            uuid = row.get('uuid', '').strip()
-
-            if not uuid or uuid == 'N/A':
-                print(f"[{i}] SKIP (UUID mancante): {title} - {artist}")
-                continue
-
-            print(f"[{i}] Elaborando UUID {uuid} → {title} - {artist}")
-
-            features = get_audio_features_by_uuid(uuid)
-
-            if not features:
-                print(f"  ✗ Feature non trovate, skip")
-                continue
-
-            result = {
-                "title": title,
-                "artist": artist,
-                "uuid": uuid,
-                **features
-            }
-
-            results.append(result)
-            print(f"  ✓ Feature aggiunte")
-
+        rows = list(reader)
+    
+    print(f"[SOUNDCHARTS] Processing {len(rows)} tracks in parallel (8 workers)...")
+    start_time = time.time()
+    
+    # Parallelize con 8 worker threads
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(_process_single_uuid, row, i+1)
+            for i, row in enumerate(rows)
+        ]
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+    
+    elapsed = time.time() - start_time
+    print(f"[SOUNDCHARTS] Parallel processing completed in {elapsed:.2f}s")
+    
     # ==============================
     # SCRITTURA CSV (SEMPRE)
     # ==============================
