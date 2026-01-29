@@ -3,7 +3,6 @@ import csv
 from typing import Optional, List, Dict
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 
 # ==============================
 # API SOUNDCHARTS
@@ -80,8 +79,6 @@ def process_csv_and_get_uuids(csv_file_path: str, output_file_path: str) -> List
     
     if len(rows) == 0:
         return []
-    
-    start_time = time.time()
     
     results = []
     

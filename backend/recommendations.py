@@ -5,6 +5,35 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
 
+# ========================================
+# DEEZER API - Ricerca immagini tracce
+# ========================================
+
+def get_track_image_from_deezer(track_name: str, artist_name: str) -> Optional[str]:
+    try:
+        results = requests.get(
+            "https://api.deezer.com/search",
+            params={"q": f"{track_name} {artist_name}", "limit": 10},
+            timeout=3
+        ).json().get("data", [])
+        
+        track, artist = track_name.lower().strip(), artist_name.lower().strip()
+        
+        for result in results:
+            if (track in result.get("title", "").lower().strip() or 
+                result.get("title", "").lower().strip() in track) and \
+               (artist in result.get("artist", {}).get("name", "").lower().strip() or 
+                result.get("artist", {}).get("name", "").lower().strip() in artist):
+                return _extract_cover_url(result.get("album", {}))
+        
+        return _extract_cover_url(results[0].get("album", {})) if results else None
+                    
+    except Exception:
+        return None
+
+def _extract_cover_url(album: dict) -> Optional[str]:
+    return album.get("cover_big") or album.get("cover_medium") or album.get("cover")
+
 # ==============================
 # MOOD MAPPING
 # ==============================
@@ -31,21 +60,25 @@ FALLBACK_RECOMMENDATIONS = {
     "sad": {
         "track": "Someone Like You",
         "artist": "Adele",
+        "image": "https://e-cdns-images.dzcdn.net/images/cover/2582df73d9c5436414b9eb8880e5be54/500x500-000000-80-0-0.jpg",
         "strategy": "fallback"
     },
     "happy": {
         "track": "Walking on Sunshine",
         "artist": "Katrina & The Waves",
+        "image": "https://e-cdns-images.dzcdn.net/images/cover/4a3d98d6e5c2f5d5c5c5c5c5c5c5c5c5/500x500-000000-80-0-0.jpg",
         "strategy": "fallback"
     },
     "energetic": {
         "track": "Shut Up and Dance",
         "artist": "Walk the Moon",
+        "image": "https://e-cdns-images.dzcdn.net/images/cover/3f0f4d7e1b9c5e5d5c5c5c5c5c5c5c5c/500x500-000000-80-0-0.jpg",
         "strategy": "fallback"
     },
     "calm": {
         "track": "Weightless",
         "artist": "Marconi Union",
+        "image": "https://e-cdns-images.dzcdn.net/images/cover/5e8c9d1f0a7b5e5d5c5c5c5c5c5c5c5c/500x500-000000-80-0-0.jpg",
         "strategy": "fallback"
     }
 }
@@ -76,8 +109,30 @@ def search_lastfm_track(search_keyword: str, lastfm_api_key: str, limit: int = 5
                 tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
                 
                 if isinstance(tracks, list):
+                    # Estrai immagini da ogni traccia
+                    for track in tracks:
+                        image_url = None
+                        if "image" in track:
+                            images = track["image"]
+                            if isinstance(images, list):
+                                for img in reversed(images):
+                                    if img.get("size") == "extralarge" or img.get("size") == "large":
+                                        image_url = img.get("#text", "")
+                                        if image_url:
+                                            break
+                        track["image_url"] = image_url
                     return tracks
                 elif tracks:
+                    image_url = None
+                    if "image" in tracks:
+                        images = tracks["image"]
+                        if isinstance(images, list):
+                            for img in reversed(images):
+                                if img.get("size") == "extralarge" or img.get("size") == "large":
+                                    image_url = img.get("#text", "")
+                                    if image_url:
+                                        break
+                    tracks["image_url"] = image_url
                     return [tracks]
                 else:
                     return []
@@ -115,8 +170,21 @@ def get_similar_track(title: str, artist: str, lastfm_api_key: str):
                 
                 # Prendi il primo risultato
                 if isinstance(similar_tracks, list) and len(similar_tracks) > 0:
-                    return similar_tracks[0]
+                    track = similar_tracks[0]
+                    # Estrai l'immagine più grande disponibile
+                    image_url = None
+                    if "image" in track:
+                        images = track["image"]
+                        if isinstance(images, list):
+                            for img in reversed(images):
+                                if img.get("size") == "extralarge" or img.get("size") == "large":
+                                    image_url = img.get("#text", "")
+                                    if image_url:
+                                        break
+                    track["image_url"] = image_url
+                    return track
                 elif similar_tracks:
+                    similar_tracks["image_url"] = None
                     return similar_tracks
             
             return None
@@ -134,7 +202,7 @@ def fetch_mood_recommendation(mood_id: int, mood_name: str, df: pd.DataFrame, la
     # Tracce nel playlist con questo mood
     mood_tracks = df[df["label"] == mood_id]
     
-    # STRATEGIA 1: Se mood è nella playlist, ricerca simile
+    # Se mood è nella playlist, ricerchiamo simile
     if len(mood_tracks) > 0:
         first_track = mood_tracks.iloc[0]
         title = first_track["title"]
@@ -148,12 +216,15 @@ def fetch_mood_recommendation(mood_id: int, mood_name: str, df: pd.DataFrame, la
             if isinstance(artist_name, dict):
                 artist_name = artist_name.get('name', '')
             
+            image_url = get_track_image_from_deezer(track_name, artist_name)
+            
             track_key = f"{track_name} - {artist_name}".lower()
             
             if track_key and track_key not in already_recommended:
                 recommendations[mood_name] = {
                     "track": track_name,
                     "artist": artist_name,
+                    "image": image_url,
                     "strategy": "similar"
                 }
                 already_recommended.add(track_key)
@@ -170,9 +241,13 @@ def fetch_mood_recommendation(mood_id: int, mood_name: str, df: pd.DataFrame, la
         track_key = f"{track_name} - {artist_name}".lower()
         
         if track_key and track_key not in already_recommended:
+            # Cerca immagine su Deezer
+            image_url = get_track_image_from_deezer(track_name, artist_name)
+            
             recommendations[mood_name] = {
                 "track": track_name,
                 "artist": artist_name,
+                "image": image_url,
                 "strategy": "keyword"
             }
             already_recommended.add(track_key)
@@ -191,7 +266,6 @@ def fetch_mood_recommendation(mood_id: int, mood_name: str, df: pd.DataFrame, la
 # Ricerca raccomandazioni per tutti i 4 mood in parallelo.
 def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481d0ece35e3d695d07d399427f5ef04"):
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    import time
     
     if not lastfm_api_key:
         import os
@@ -202,11 +276,8 @@ def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481
         df = pd.read_csv(csv_with_features)
         mood_counts = df["label"].value_counts().sort_index().to_dict()
     except Exception as e:
-        print(f"[REC] ⚠️ Errore lettura CSV: {e}")
-        print(f"[REC] Uso fallback garantito per tutti i mood")
         return FALLBACK_RECOMMENDATIONS.copy()
     
-    start_time = time.time()
     already_recommended = set()
     recommendations = {}
     
@@ -217,7 +288,7 @@ def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481
             for mood_id in range(4)
         }
         
-        # Raccogli risultati
+        # Raccogliamo risultati
         for future in as_completed(tasks):
             try:
                 result = future.result(timeout=10)
@@ -225,8 +296,6 @@ def get_similar_songs_by_mood(csv_with_features: str, lastfm_api_key: str = "481
                     recommendations.update(result)
             except Exception as e:
                 print(f"[REC] Errore thread: {e}")
-    
-    elapsed = time.time() - start_time
     
     # Aggiunta di mood mancanti con fallback
     for mood_id, mood_name in MOOD_LABELS.items():

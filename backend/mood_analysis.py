@@ -34,18 +34,15 @@ def calculate_moods(csv_with_features: str, model):
 
     # Tramite il modello prevediamo il mood per ogni traccia
     df["label"] = model.predict(X).astype(int)
-    print(f"[MOOD] Predizione completata. Mood trovati: {sorted(df['label'].unique().tolist())}")
 
     # Calcolo delle statistiche sul mood della playlist
     overall = {
-        "mood_mean": float(df["label"].mean()),
         "mood_mode": int(df["label"].mode()[0]),
         "mood_distribution": df["label"].value_counts(normalize=True).to_dict(),
         "total_tracks": int(len(df))
     }
 
-
-    # Salviamo il risultato nel CSV
+    # Salviamo le etichette nel CSV
     df.to_csv(csv_with_features, index=False)
 
     return df, overall

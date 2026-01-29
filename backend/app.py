@@ -2,8 +2,10 @@ import subprocess
 import sys
 import os
 import pandas as pd
+import requests
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from utils import load_model, cleanup_csv_files
@@ -25,6 +27,27 @@ app.add_middleware(
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ==============================
+# IMAGE PROXY ENDPOINT (per CORS)
+# ==============================
+
+@app.get("/api/image")
+async def get_image(url: str):
+    try:
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"}
+            )
+    except Exception as e:
+        pass
+    
+    return {"error": "Could not fetch image"}
 
 # ==============================
 # INPUT API

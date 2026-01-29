@@ -3,6 +3,10 @@ import joblib
 from huggingface_hub import hf_hub_download
 from dotenv import load_dotenv
 
+# ==============================
+# CARICAMENTO MODELLO
+# ==============================
+
 load_dotenv()
 
 MODEL_REPO = "Alepnc04/PlayMoodifyModel"
@@ -10,6 +14,7 @@ MODEL_FILE = "PlayMoodify.pkl"
 
 _model = None
 
+# Carica il modello ML da HuggingFace Hub
 def load_model():
     global _model
     if _model is None:
