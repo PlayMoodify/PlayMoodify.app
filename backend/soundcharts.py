@@ -4,6 +4,12 @@ import pandas as pd
 import csv
 from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # ==============================
 # API SOUNDCHARTS
@@ -16,8 +22,8 @@ def get_audio_features_by_uuid(uuid: str) -> Optional[Dict]:
         url = f"https://customer.api.soundcharts.com/api/v2.25/song/{uuid}"
 
         headers = {
-            'x-app-id': 'PLEOPARDI-API_52D50A96',
-            'x-api-key': '31fb4ecb77abe4e9',
+            'x-app-id': os.getenv('X_APP_ID_FEATURE'),
+            'x-api-key': os.getenv('X_API_KEY_FEATURE'),
         }
 
         response = requests.get(url, headers=headers, timeout=2)

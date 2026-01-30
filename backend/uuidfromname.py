@@ -3,6 +3,12 @@ import csv
 from typing import Optional, List, Dict
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # ==============================
 # API SOUNDCHARTS
@@ -21,8 +27,8 @@ def get_uuid_from_soundcharts(song_name: str, artist_name: Optional[str] = None)
         url = f"https://customer.api.soundcharts.com/api/v2/song/search/{encoded_query}"
         
         headers = {
-            'x-app-id': 'MBIANCHI-API_12DD631F',
-            'x-api-key': '0214335ba5236638',
+            'x-app-id': os.getenv('X_APP_ID_UUID'),
+            'x-api-key': os.getenv('X_API_KEY_UUID'),
         }
 
         params = {

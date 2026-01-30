@@ -29,6 +29,10 @@ def calculate_moods(csv_with_features: str, model):
         print(f"[MOOD] ⚠️ Colonne feature mancanti: {missing}")
         raise ValueError(f"Colonne feature mancanti: {missing}")
 
+    # Verifica che ci siano tracce da analizzare
+    if len(df) == 0:
+        raise ValueError("Nessuna traccia disponibile per l'analisi del mood")
+
     # Estrazione delle feature audio dal csv
     X = df[FEATURE_COLUMNS]
 
