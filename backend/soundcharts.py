@@ -4,7 +4,6 @@ import pandas as pd
 import csv
 from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 
 # ==============================
 # API SOUNDCHARTS

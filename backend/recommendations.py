@@ -3,7 +3,6 @@ import pandas as pd
 from typing import Optional, Dict, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import os
 
 # ========================================
 # DEEZER API - Ricerca immagini tracce
